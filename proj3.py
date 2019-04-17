@@ -5,6 +5,7 @@ import random
 from keras.layers import Concatenate, Dense, Dot, Dropout, Embedding, Input, Reshape
 from keras.models import Model
 from keras.callbacks import Callback, ModelCheckpoint
+from keras.optimizers import Adagrad
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error
@@ -12,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 import tensorflow
 
 
-STUDENT_ID = '23846183'
+STUDENT_ID = '20269470'
 
 random.seed(2019)
 np.random.seed(2019)
@@ -41,16 +42,16 @@ def build_deepwide_model(len_continuous, deep_vocab_lens, len_wide, embed_size):
         emb_list.append(_emb)
 
     deep_input = Concatenate()(emb_list + [continuous_input])
-    dense_1 = Dense(256, activation='relu')(deep_input)
-    dense_1_dp = Dropout(0.3)(dense_1)
-    dense_2 = Dense(128, activation='relu')(dense_1_dp)
-    dense_2_dp = Dropout(0.3)(dense_2)
-    dense_3 = Dense(64, activation='relu')(dense_2_dp)
-    dense_3_dp = Dropout(0.3)(dense_3)
+    dense_1 = Dense(1024, activation='relu')(deep_input)
+    dense_1_dp = Dropout(0.05)(dense_1)
+    dense_2 = Dense(512, activation='relu')(dense_1_dp)
+    dense_2_dp = Dropout(0.1)(dense_2)
+    dense_3 = Dense(256, activation='relu')(dense_2_dp)
+    dense_3_dp = Dropout(0.1)(dense_3)
 
     wide_input = Input(shape=(len_wide,), dtype='float32')
     input_list.append(wide_input)
-    
+
     fc_input = Concatenate()([dense_3_dp, wide_input])
     model_output = Dense(1)(fc_input)
     model = Model(inputs=input_list,
@@ -59,7 +60,11 @@ def build_deepwide_model(len_continuous, deep_vocab_lens, len_wide, embed_size):
 
 
 def get_continuous_features(df, continuous_columns):
-    continuous_features = df[continuous_columns].values
+    features = df[continuous_columns]
+    year = pd.DatetimeIndex(df["user_yelping_since"]).year.values
+    year = year.reshape(year.shape[0],1)
+    continuous_features = np.concatenate((features, year), axis=1)
+    #continuous_features = df[continuous_columns].values
     return continuous_features
 
 
@@ -78,17 +83,17 @@ def get_top_k_p_combinations(df, comb_p, topk, output_freq=False):
         return [t[0] for t in sorted_categories_combinations[:topk]]
 
 
-def get_wide_features(df):
+def get_wide_features(df, delimiter=", "):
     def categories_to_binary_output(categories):
         binary_output = [0 for _ in range(len(selected_categories_to_idx))]
-        for category in categories.split(', '):
+        for category in categories.split(delimiter):
             if category in selected_categories_to_idx:
                 binary_output[selected_categories_to_idx[category]] = 1
             else:
                 binary_output[0] = 1
         return binary_output
     def categories_cross_transformation(categories):
-        current_category_set = set(categories.split(', '))
+        current_category_set = set(categories.split(delimiter))
         corss_transform_output = [0 for _ in range(len(top_combinations))]
         for k, comb_k in enumerate(top_combinations):
             if len(current_category_set & comb_k) == len(comb_k):
@@ -126,10 +131,11 @@ if __name__ == "__main__":
 
     # Continuous features
     print("Prepare continuous features...")
-    continuous_columns = ["user_average_stars", "user_cool", "user_fans", 
+    continuous_columns = ["user_average_stars", "user_cool", "user_fans",
                           "user_review_count", "user_useful", "user_funny",
-                          "item_is_open", "item_latitude", "item_longitude", 
+                          "item_is_open", "item_latitude", "item_longitude",
                           "item_review_count", "item_stars"]
+    # continuous_columns = []
     tr_continuous_features = get_continuous_features(tr_df, continuous_columns)
     val_continuous_features = get_continuous_features(val_df, continuous_columns)
     te_continuous_features = get_continuous_features(te_df, continuous_columns)
@@ -141,6 +147,7 @@ if __name__ == "__main__":
     # Deep features
     print("Prepare deep features...")
     item_deep_columns = ["item_city", "item_postal_code", "item_state"]
+    # item_deep_columns = []
     item_deep_vocab_lens = []
     for col_name in item_deep_columns:
         tmp = item_df[col_name].unique()
@@ -164,9 +171,9 @@ if __name__ == "__main__":
     idx_to_selected_categories = {val: key for key, val in selected_categories_to_idx.items()}
     #   Prepare Cross transformation for each categories
     top_combinations = []
-    top_combinations += get_top_k_p_combinations(tr_df, 2, 50, output_freq=False)
-    top_combinations += get_top_k_p_combinations(tr_df, 3, 30, output_freq=False)
-    top_combinations += get_top_k_p_combinations(tr_df, 4, 20, output_freq=False)
+    top_combinations += get_top_k_p_combinations(tr_df, 2, 225, output_freq=False)
+    top_combinations += get_top_k_p_combinations(tr_df, 3, 80, output_freq=False)
+    top_combinations += get_top_k_p_combinations(tr_df, 4, 15, output_freq=False)
     top_combinations = [set(t) for t in top_combinations]
 
     tr_wide_features = get_wide_features(tr_df)
@@ -187,24 +194,30 @@ if __name__ == "__main__":
     te_features += [te_deep_features[:,i].tolist() for i in range(len(te_deep_features[0]))]
     te_features.append(te_wide_features.tolist())
 
+    print(len(tr_continuous_features[0]))
+    print(item_deep_vocab_lens)
+    print(len(tr_wide_features[0]))
     # Model training
     deepwide_model = build_deepwide_model(
         len(tr_continuous_features[0]),
-        item_deep_vocab_lens,  
-        len(tr_wide_features[0]), 
-        embed_size=100)
-    deepwide_model.compile(optimizer='adagrad', loss='mse')
-    history = deepwide_model.fit(
-        tr_features, 
-        tr_ratings, 
-        epochs=1, verbose=1, callbacks=[ModelCheckpoint('model.h5')])
+        item_deep_vocab_lens,
+        len(tr_wide_features[0]),
+        embed_size=200)
+    deepwide_model.compile(optimizer=Adagrad(lr=0.005), loss='mse')
+    for i in range(10):
+        print("Epoch "+str(i+1))
+        history = deepwide_model.fit(
+            tr_features,
+            tr_ratings,
+            epochs=1, verbose=1, callbacks=[ModelCheckpoint('model.h5')])
 
-    # Make Prediction
-    y_pred = deepwide_model.predict(tr_features)
-    print("TRAIN RMSE: ", rmse(y_pred, tr_ratings))
-    y_pred = deepwide_model.predict(val_features)
-    print("VALID RMSE: ", rmse(y_pred, val_ratings))
-    y_pred = deepwide_model.predict(te_features)
+        # Make Prediction
+        y_pred = deepwide_model.predict(tr_features)
+        print("TRAIN RMSE: ", rmse(y_pred, tr_ratings))
+        y_pred = deepwide_model.predict(val_features)
+        print("VALID RMSE: ", rmse(y_pred, val_ratings))
+        y_pred = deepwide_model.predict(te_features)
+
     res_df = pd.DataFrame()
     res_df['pred'] = y_pred[:, 0]
     res_df.to_csv("{}.csv".format(STUDENT_ID), index=False)
